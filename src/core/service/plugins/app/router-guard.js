@@ -8,10 +8,18 @@ function addKeepAliveInclude (componentName) {
   }
 }
 
-function removeKeepAliveInclude (componentName) {
-  const index = this.keepAliveInclude.indexOf(componentName)
-  if (index !== -1) {
-    this.keepAliveInclude.splice(index, 1)
+let deltaIds = []
+
+function removeKeepAliveInclude (componentNameOrDelta) {
+  if (typeof componentNameOrDelta === 'number') {
+    deltaIds = this.keepAliveInclude.splice(-(componentNameOrDelta - 1)).map(name => {
+      return parseInt(name.split('-').pop())
+    })
+  } else {
+    const index = this.keepAliveInclude.indexOf(componentNameOrDelta)
+    if (index !== -1) {
+      this.keepAliveInclude.splice(index, 1)
+    }
   }
 }
 
@@ -69,8 +77,15 @@ function beforeEach (to, from, next, routes) {
   currentPages = getCurrentPages(true) // 每次 beforeEach 时获取当前currentPages，因为 afterEach 之后，获取不到上一个 page 了，导致无法调用 onUnload
   const fromId = from.params.__id__
   const toId = to.params.__id__
+  const toName = to.meta.name + '-' + toId
   if (toId === fromId) { // 相同页面阻止
-    next(false)
+    // 处理外部修改 history 导致卡在当前页面的问题
+    if (to.fullPath !== from.fullPath) {
+      removeKeepAliveInclude.call(this, toName)
+      next()
+    } else {
+      next(false)
+    }
   } else if (to.meta.id && to.meta.id !== toId) { // id 不妥，replace跳转
     next({
       path: to.path,
@@ -78,7 +93,6 @@ function beforeEach (to, from, next, routes) {
     })
   } else {
     const fromName = from.meta.name + '-' + fromId
-    const toName = to.meta.name + '-' + toId
 
     switch (to.type) {
       case 'navigateTo':
@@ -111,6 +125,9 @@ function beforeEach (to, from, next, routes) {
         // 后退或非 API 访问
         if (fromId && fromId > toId) { // back
           removeKeepAliveInclude.call(this, fromName)
+          if (this.$router._$delta > 1) {
+            removeKeepAliveInclude.call(this, this.$router._$delta)
+          }
         }
         break
     }
@@ -158,9 +175,19 @@ function afterEach (to, from) {
     default:
       if (fromId && fromId > toId) { // history back
         fromVm && callPageHook(fromVm, 'onUnload')
+        if (this.$router._$delta > 1) {
+          deltaIds.reverse().forEach(deltaId => {
+            const pageVm = currentPages.find(pageVm => pageVm.$page.id === deltaId)
+            pageVm && callPageHook(pageVm, 'onUnload')
+          })
+        }
       }
       break
   }
+
+  delete this.$router._$delta
+  deltaIds.length = 0
+
   if (to.type !== 'reLaunch') { // 因为 reLaunch 会重置 id，故不触发 onShow,switchTab 在 beforeRouteEnter 中触发
     // 直接获取所有 pages,getCurrentPages 正常情况下仅返回页面栈内，传 true 则返回所有已存在（主要是 tabBar 页面）
     const toVm = getCurrentPages(true).find(pageVm => pageVm.$page.id === toId) // 使用最新的 pages

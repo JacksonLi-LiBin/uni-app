@@ -40,7 +40,7 @@ const camelize = cached((str) => {
   return str.replace(camelizeRE, (_, c) => c ? c.toUpperCase() : '')
 });
 
-const SYNC_API_RE = /subNVue|requireNativePlugin|upx2px|hideKeyboard|canIUse|^create|Sync$|Manager$/;
+const SYNC_API_RE = /^\$|getSubNVueById|requireNativePlugin|upx2px|hideKeyboard|canIUse|^create|Sync$|Manager$|base64ToArrayBuffer|arrayBufferToBase64/;
 
 const CONTEXT_API_RE = /^create|Manager$/;
 
@@ -89,15 +89,17 @@ function promisify (name, api) {
         fail: reject
       }), ...params);
       /* eslint-disable no-extend-native */
-      Promise.prototype.finally = function (callback) {
-        const promise = this.constructor;
-        return this.then(
-          value => promise.resolve(callback()).then(() => value),
-          reason => promise.resolve(callback()).then(() => {
-            throw reason
-          })
-        )
-      };
+      if (!Promise.prototype.finally) {
+        Promise.prototype.finally = function (callback) {
+          const promise = this.constructor;
+          return this.then(
+            value => promise.resolve(callback()).then(() => value),
+            reason => promise.resolve(callback()).then(() => {
+              throw reason
+            })
+          )
+        };
+      }
     }))
   }
 }
@@ -336,7 +338,11 @@ function wrapper (methodName, method) {
 
       arg1 = processArgs(methodName, arg1, options.args, options.returnValue);
 
-      const returnValue = swan[options.name || methodName](arg1, arg2);
+      const args = [arg1];
+      if (typeof arg2 !== 'undefined') {
+        args.push(arg2);
+      }
+      const returnValue = swan[options.name || methodName].apply(swan, args);
       if (isSyncApi(methodName)) { // 同步 api
         return processReturnValue(methodName, returnValue, options.returnValue, isContextApi(methodName))
       }
@@ -407,6 +413,46 @@ var extraApi = /*#__PURE__*/Object.freeze({
   getProvider: getProvider
 });
 
+const getEmitter = (function () {
+  if (typeof getUniEmitter === 'function') {
+    /* eslint-disable no-undef */
+    return getUniEmitter
+  }
+  let Emitter;
+  return function getUniEmitter () {
+    if (!Emitter) {
+      Emitter = new Vue();
+    }
+    return Emitter
+  }
+})();
+
+function apply (ctx, method, args) {
+  return ctx[method].apply(ctx, args)
+}
+
+function $on () {
+  return apply(getEmitter(), '$on', [...arguments])
+}
+function $off () {
+  return apply(getEmitter(), '$off', [...arguments])
+}
+function $once () {
+  return apply(getEmitter(), '$once', [...arguments])
+}
+function $emit () {
+  return apply(getEmitter(), '$emit', [...arguments])
+}
+
+
+
+var eventApi = /*#__PURE__*/Object.freeze({
+  $on: $on,
+  $off: $off,
+  $once: $once,
+  $emit: $emit
+});
+
 function requestPayment (params) {
   let parseError = false;
   if (typeof params.orderInfo === 'string') {
@@ -469,64 +515,14 @@ Component = function (options = {}) {
   return MPComponent(options)
 };
 
-function initBehavior (options) {
-  return Behavior(options)
-}
-function initRefs (vm) {
-  const mpInstance = vm.$scope;
-  Object.defineProperty(vm, '$refs', {
-    get () {
-      const $refs = {};
-      const components = mpInstance.selectAllComponents('.vue-ref');
-      components.forEach(component => {
-        const ref = component.dataset.ref;
-        $refs[ref] = component.$vm || component;
-      });
-      const forComponents = mpInstance.selectAllComponents('.vue-ref-in-for');
-      forComponents.forEach(component => {
-        const ref = component.dataset.ref;
-        if (!$refs[ref]) {
-          $refs[ref] = [];
-        }
-        $refs[ref].push(component.$vm || component);
-      });
-      return $refs
-    }
-  });
-}
-
-const mocks$1 = ['nodeId'];
-
-function initPage$1 (pageOptions) {
-  return initComponent$1(pageOptions)
-}
-
-function initComponent$1 (componentOptions) {
-  componentOptions.messages = {
-    '__l': handleLink$1
-  };
-  return Component(componentOptions)
-}
-
-function triggerLink$1 (mpInstance, vueOptions) {
-  mpInstance.dispatch('__l', mpInstance.$vm || vueOptions);
-}
-
-function handleLink$1 (event) {
-  const target = event.value;
-  if (target.$mp) {
-    if (!target.$parent) {
-      target.$parent = this.$vm;
-      target.$parent.$children.push(target);
-
-      target.$root = this.$vm.$root;
-    }
-  } else {
-    if (!target.parent) {
-      target.parent = this.$vm;
-    }
-  }
-}
+const PAGE_EVENT_HOOKS = [
+  'onPullDownRefresh',
+  'onReachBottom',
+  'onShareAppMessage',
+  'onPageScroll',
+  'onResize',
+  'onTabItemTap'
+];
 
 function initMocks (vm, mocks) {
   const mpInstance = vm.$mp[vm.mpType];
@@ -537,15 +533,83 @@ function initMocks (vm, mocks) {
   });
 }
 
-function initHooks (mpOptions, hooks) {
+function hasHook (hook, vueOptions) {
+  if (!vueOptions) {
+    return true
+  }
+
+  if (Vue.options && Array.isArray(Vue.options[hook])) {
+    return true
+  }
+
+  vueOptions = vueOptions.default || vueOptions;
+
+  if (isFn(vueOptions)) {
+    if (isFn(vueOptions.extendOptions[hook])) {
+      return true
+    }
+    if (vueOptions.super &&
+            vueOptions.super.options &&
+            Array.isArray(vueOptions.super.options[hook])) {
+      return true
+    }
+    return false
+  }
+
+  if (isFn(vueOptions[hook])) {
+    return true
+  }
+  const mixins = vueOptions.mixins;
+  if (Array.isArray(mixins)) {
+    return !!mixins.find(mixin => hasHook(hook, mixin))
+  }
+}
+
+function initHooks (mpOptions, hooks, vueOptions) {
   hooks.forEach(hook => {
-    mpOptions[hook] = function (args) {
-      return this.$vm.__call_hook(hook, args)
-    };
+    if (hasHook(hook, vueOptions)) {
+      mpOptions[hook] = function (args) {
+        return this.$vm && this.$vm.__call_hook(hook, args)
+      };
+    }
   });
 }
 
-function getData (vueOptions, context) {
+function initVueComponent (Vue$$1, vueOptions) {
+  vueOptions = vueOptions.default || vueOptions;
+  let VueComponent;
+  if (isFn(vueOptions)) {
+    VueComponent = vueOptions;
+    vueOptions = VueComponent.extendOptions;
+  } else {
+    VueComponent = Vue$$1.extend(vueOptions);
+  }
+  return [VueComponent, vueOptions]
+}
+
+function initSlots (vm, vueSlots) {
+  if (Array.isArray(vueSlots) && vueSlots.length) {
+    const $slots = Object.create(null);
+    vueSlots.forEach(slotName => {
+      $slots[slotName] = true;
+    });
+    vm.$scopedSlots = vm.$slots = $slots;
+  }
+}
+
+function initVueIds (vueIds, mpInstance) {
+  vueIds = (vueIds || '').split(',');
+  const len = vueIds.length;
+
+  if (len === 1) {
+    mpInstance._$vueId = vueIds[0];
+  } else if (len === 2) {
+    mpInstance._$vueId = vueIds[0];
+    mpInstance._$vuePid = vueIds[1];
+  }
+}
+
+function initData (vueOptions, context) {
   let data = vueOptions.data || {};
   const methods = vueOptions.methods || {};
 
@@ -587,7 +651,7 @@ function createObserver (name) {
   }
 }
 
-function getBehaviors (vueOptions) {
+function initBehaviors (vueOptions, initBehavior) {
   const vueBehaviors = vueOptions['behaviors'];
   const vueExtends = vueOptions['extends'];
   const vueMixins = vueOptions['mixins'];
@@ -607,8 +671,14 @@ function getBehaviors (vueOptions) {
           vueProps.push('name');
           vueProps.push('value');
         } else {
-          vueProps['name'] = String;
-          vueProps['value'] = null;
+          vueProps['name'] = {
+            type: String,
+            default: ''
+          };
+          vueProps['value'] = {
+            type: [String, Number, Boolean, Array, Object, Date],
+            default: ''
+          };
         }
       }
     });
@@ -616,7 +686,7 @@ function getBehaviors (vueOptions) {
   if (isPlainObject(vueExtends) && vueExtends.props) {
     behaviors.push(
       initBehavior({
-        properties: getProperties(vueExtends.props, true)
+        properties: initProperties(vueExtends.props, true)
       })
     );
   }
@@ -625,7 +695,7 @@ function getBehaviors (vueOptions) {
       if (isPlainObject(vueMixin) && vueMixin.props) {
         behaviors.push(
           initBehavior({
-            properties: getProperties(vueMixin.props, true)
+            properties: initProperties(vueMixin.props, true)
           })
         );
       }
@@ -658,9 +728,13 @@ function parsePropType (key, type, defaultValue, file) {
   return type
 }
 
-function getProperties (props, isBehavior = false, file = '') {
+function initProperties (props, isBehavior = false, file = '') {
   const properties = {};
   if (!isBehavior) {
+    properties.vueId = {
+      type: String,
+      value: ''
+    };
     properties.vueSlots = { // 小程序不能直接定义 $slots 的 props，所以通过 vueSlots 转换到 $slots
       type: null,
       value: [],
@@ -870,6 +944,17 @@ function processEventArgs (vm, event, args = [], extra = [], isCustom, methodNam
 const ONCE = '~';
 const CUSTOM = '^';
 
+function isMatchEventType (eventType, optType) {
+  return (eventType === optType) ||
+        (
+          optType === 'regionchange' &&
+            (
+              eventType === 'begin' ||
+                eventType === 'end'
+            )
+        )
+}
+
 function handleEvent (event) {
   event = wrapper$1(event);
 
@@ -890,11 +975,19 @@ function handleEvent (event) {
     const isOnce = type.charAt(0) === ONCE;
     type = isOnce ? type.slice(1) : type;
 
-    if (eventsArray && eventType === type) {
+    if (eventsArray && isMatchEventType(eventType, type)) {
       eventsArray.forEach(eventArray => {
         const methodName = eventArray[0];
         if (methodName) {
-          const handler = this.$vm[methodName];
+          let handlerCtx = this.$vm;
+          if (
+            handlerCtx.$options.generic &&
+                        handlerCtx.$parent &&
+                        handlerCtx.$parent.$parent
+          ) { // mp-weixin,mp-toutiao 抽象节点模拟 scoped slots
+            handlerCtx = handlerCtx.$parent.$parent;
+          }
+          const handler = handlerCtx[methodName];
           if (!isFn(handler)) {
             throw new Error(` _vm.${methodName} is not a function`)
           }
@@ -904,7 +997,7 @@ function handleEvent (event) {
             }
             handler.once = true;
           }
-          handler.apply(this.$vm, processEventArgs(
+          handler.apply(handlerCtx, processEventArgs(
             this.$vm,
             event,
             eventArray[1],
@@ -918,40 +1011,18 @@ function handleEvent (event) {
   });
 }
 
-function baiduComponentDestroy ($vm) {
-  $vm.$children.forEach(childVm => {
-    childVm.$mp.component.detached();
-  });
-  $vm.$mp.component.detached();
-}
-
-function baiduPageDestroy ($vm) {
-  $vm.$destroy();
-  $vm.$children.forEach(childVm => {
-    baiduComponentDestroy(childVm);
-  });
-}
-
 const hooks = [
+  'onShow',
   'onHide',
   'onError',
-  'onPageNotFound',
-  'onUniNViewMessage'
+  'onPageNotFound'
 ];
 
-function initVm (vm) {
-  if (this.$vm) { // 百度竟然 onShow 在 onLaunch 之前？
-    return
-  }
-
-  this.$vm = vm;
-
-  this.$vm.$mp = {
-    app: this
-  };
-}
-
-function createApp (vm) {
+function parseBaseApp (vm, {
+  mocks,
+  initRefs
+}) {
+  Vue.prototype.mpHost = "mp-baidu";
 
   Vue.mixin({
     beforeCreate () {
@@ -973,195 +1044,181 @@ function createApp (vm) {
 
       if (this.mpType !== 'app') {
         initRefs(this);
-        initMocks(this, mocks$1);
+        initMocks(this, mocks);
       }
-    },
-    created () { // 处理 injections
-      this.__init_injections(this);
-      this.__init_provide(this);
     }
   });
 
   const appOptions = {
     onLaunch (args) {
-      initVm.call(this, vm);
+      if (this.$vm) { // 已经初始化过了，主要是为了百度，百度 onShow 在 onLaunch 之前
+        return
+      }
+
+      this.$vm = vm;
+
+      this.$vm.$mp = {
+        app: this
+      };
+
+      this.$vm.$scope = this;
 
       this.$vm._isMounted = true;
-      this.$vm.__call_hook('mounted');
+      this.$vm.__call_hook('mounted', args);
 
       this.$vm.__call_hook('onLaunch', args);
-    },
-    onShow (args) {
-      initVm.call(this, vm);
-
-      this.$vm.__call_hook('onShow', args);
     }
   };
 
   // 兼容旧版本 globalData
   appOptions.globalData = vm.$options.globalData || {};
 
-  initHooks(appOptions, hooks); // 延迟执行，因为 App 的注册在 main.js 之前，可能导致生命周期内 Vue 原型上开发者注册的属性无法访问
+  initHooks(appOptions, hooks);
 
-  App(appOptions);
+  return appOptions
+}
 
+function findVmByVueId (vm, vuePid) {
+  const $children = vm.$children;
+  // 优先查找直属
+  let parentVm = $children.find(childVm => childVm.$scope._$vueId === vuePid);
+  if (parentVm) {
+    return parentVm
+  }
+  // 反向递归查找
+  for (let i = $children.length - 1; i >= 0; i--) {
+    parentVm = findVmByVueId($children[i], vuePid);
+    if (parentVm) {
+      return parentVm
+    }
+  }
+}
+
+function initBehavior (options) {
+  return Behavior(options)
+}
+
+function initRefs (vm) {
+  const mpInstance = vm.$scope;
+  Object.defineProperty(vm, '$refs', {
+    get () {
+      const $refs = {};
+      const components = mpInstance.selectAllComponents('.vue-ref');
+      components.forEach(component => {
+        const ref = component.dataset.ref;
+        $refs[ref] = component.$vm || component;
+      });
+      const forComponents = mpInstance.selectAllComponents('.vue-ref-in-for');
+      forComponents.forEach(component => {
+        const ref = component.dataset.ref;
+        if (!$refs[ref]) {
+          $refs[ref] = [];
+        }
+        $refs[ref].push(component.$vm || component);
+      });
+      return $refs
+    }
+  });
+}
+
+function handleLink (event) {
+  const {
+    vuePid,
+    vueOptions
+  } = event.detail || event.value; // detail 是微信,value 是百度(dipatch)
+
+  let parentVm;
+
+  if (vuePid) {
+    parentVm = findVmByVueId(this.$vm, vuePid);
+  }
+
+  if (!parentVm) {
+    parentVm = this.$vm;
+  }
+
+  vueOptions.parent = parentVm;
+}
+
+const mocks$1 = ['nodeId', 'componentName'];
+
+function isPage$1 () {
+  return !this.ownerId
+}
+
+function initRelation$1 (detail) {
+  this.dispatch('__l', detail);
+}
+
+function parseApp (vm) {
+  // 百度 onShow 竟然会在 onLaunch 之前
+  const appOptions = parseBaseApp(vm, {
+    mocks: mocks$1,
+    initRefs
+  });
+  appOptions.onShow = function onShow (args) {
+    if (!this.$vm) {
+      this.onLaunch(args);
+    }
+    this.$vm.__call_hook('onShow', args);
+  };
+  return appOptions
+}
+
+function createApp (vm) {
+  App(parseApp(vm));
   return vm
 }
 
-const hooks$1 = [
-  'onShow',
-  'onHide',
-  'onPullDownRefresh',
-  'onReachBottom',
-  'onShareAppMessage',
-  'onPageScroll',
-  'onResize',
-  'onTabItemTap',
-  'onBackPress',
-  'onNavigationBarButtonTap',
-  'onNavigationBarSearchInputChanged',
-  'onNavigationBarSearchInputConfirmed',
-  'onNavigationBarSearchInputClicked'
-];
-
-function initVm$1 (VueComponent) { // 百度的 onLoad 触发在 attached 之前
-  if (this.$vm) {
-    return
-  }
-
-  this.$vm = new VueComponent({
-    mpType: 'page',
-    mpInstance: this
-  });
-
-  {
-    this.$vm.$baiduComponentInstances = Object.create(null);
-  }
-
-  this.$vm.__call_hook('created');
-  this.$vm.$mount();
-}
-
-function createPage (vueOptions) {
-  vueOptions = vueOptions.default || vueOptions;
-  let VueComponent;
-  if (isFn(vueOptions)) {
-    VueComponent = vueOptions;
-    vueOptions = VueComponent.extendOptions;
-  } else {
-    VueComponent = Vue.extend(vueOptions);
-  }
-  const pageOptions = {
-    options: {
-      multipleSlots: true,
-      addGlobalClass: true
-    },
-    data: getData(vueOptions, Vue.prototype),
-    lifetimes: { // 当页面作为组件时
-      attached () {
-        initVm$1.call(this, VueComponent);
-      },
-      ready () {
-        this.$vm.__call_hook('beforeMount');
-        this.$vm._isMounted = true;
-        this.$vm.__call_hook('mounted');
-        this.$vm.__call_hook('onReady');
-      },
-      detached () {
-        this.$vm.$destroy();
-      }
-    },
-    methods: { // 作为页面时
-      onLoad (args) {
-        initVm$1.call(this, VueComponent);
-        { // 百度当组件作为页面时 pageinstancce 不是原来组件的 instance
-          this.pageinstance.$vm = this.$vm;
-        }
-        this.$vm.$mp.query = args; // 又要兼容 mpvue
-        this.$vm.__call_hook('onLoad', args); // 开发者可能会在 onLoad 时赋值，提前到 mount 之前
-      },
-      onUnload () {
-        this.$vm.__call_hook('onUnload');
-        { // 百度组件不会在页面 unload 时触发 detached
-          baiduPageDestroy(this.$vm);
-        }
-      },
-      __e: handleEvent,
-      __l: handleLink$1
-    }
-  };
-
-  initHooks(pageOptions.methods, hooks$1);
-
-  return initPage$1(pageOptions, vueOptions)
-}
-
-function initVm$2 (VueComponent) {
-  if (this.$vm) {
-    return
-  }
-
-  const properties = this.properties;
-
-  const options = {
-    mpType: 'component',
-    mpInstance: this,
-    propsData: properties
-  };
-  // 初始化 vue 实例
-  this.$vm = new VueComponent(options);
-
-  // 处理$slots,$scopedSlots（暂不支持动态变化$slots）
-  const vueSlots = properties.vueSlots;
-  if (Array.isArray(vueSlots) && vueSlots.length) {
-    const $slots = Object.create(null);
-    vueSlots.forEach(slotName => {
-      $slots[slotName] = true;
-    });
-    this.$vm.$scopedSlots = this.$vm.$slots = $slots;
-  }
-  // 性能优先，mount 提前到 attached 中，保证组件首次渲染数据被合并
-  // 导致与标准 Vue 的差异，data 和 computed 中不能使用$parent，provide等组件属性
-  this.$vm.$mount();
-}
-
-function createComponent (vueOptions) {
-  vueOptions = vueOptions.default || vueOptions;
-
-  let VueComponent;
-  if (isFn(vueOptions)) {
-    VueComponent = vueOptions; // TODO form-field props.name,props.value
-    vueOptions = VueComponent.extendOptions;
-  } else {
-    VueComponent = Vue.extend(vueOptions);
-  }
-
-  const behaviors = getBehaviors(vueOptions);
-
-  const properties = getProperties(vueOptions.props, false, vueOptions.__file);
+function parseBaseComponent (vueComponentOptions, {
+  isPage: isPage$$1,
+  initRelation: initRelation$$1
+} = {}) {
+  let [VueComponent, vueOptions] = initVueComponent(Vue, vueComponentOptions);
 
   const componentOptions = {
     options: {
       multipleSlots: true,
       addGlobalClass: true
     },
-    data: getData(vueOptions, Vue.prototype),
-    behaviors,
-    properties,
+    data: initData(vueOptions, Vue.prototype),
+    behaviors: initBehaviors(vueOptions, initBehavior),
+    properties: initProperties(vueOptions.props, false, vueOptions.__file),
     lifetimes: {
       attached () {
-        initVm$2.call(this, VueComponent);
+        const properties = this.properties;
+
+        const options = {
+          mpType: isPage$$1.call(this) ? 'page' : 'component',
+          mpInstance: this,
+          propsData: properties
+        };
+
+        initVueIds(properties.vueId, this);
+
+        // 处理父子关系
+        initRelation$$1.call(this, {
+          vuePid: this._$vuePid,
+          vueOptions: options
+        });
+
+        // 初始化 vue 实例
+        this.$vm = new VueComponent(options);
+
+        // 处理$slots,$scopedSlots（暂不支持动态变化$slots）
+        initSlots(this.$vm, properties.vueSlots);
+
+        // 触发首次 setData
+        this.$vm.$mount();
       },
       ready () {
-        initVm$2.call(this, VueComponent); // 目前发现部分情况小程序 attached 不触发
-        triggerLink$1(this); // 处理 parent,children
-
-        // 补充生命周期
-        this.$vm.__call_hook('created');
-        this.$vm.__call_hook('beforeMount');
-        this.$vm._isMounted = true;
-        this.$vm.__call_hook('mounted');
-        this.$vm.__call_hook('onReady');
+        // 当组件 props 默认值为 true，初始化时传入 false 会导致 created,ready 触发, 但 attached 不触发
+        // https://developers.weixin.qq.com/community/develop/doc/00066ae2844cc0f8eb883e2a557800
+        if (this.$vm) {
+          this.$vm._isMounted = true;
+          this.$vm.__call_hook('mounted');
+          this.$vm.__call_hook('onReady');
+        }
       },
       detached () {
         this.$vm.$destroy();
@@ -1169,7 +1226,7 @@ function createComponent (vueOptions) {
     },
     pageLifetimes: {
       show (args) {
-        this.$vm.__call_hook('onPageShow', args);
+        this.$vm && this.$vm.__call_hook('onPageShow', args);
       },
       hide () {
         this.$vm && this.$vm.__call_hook('onPageHide');
@@ -1179,12 +1236,126 @@ function createComponent (vueOptions) {
       }
     },
     methods: {
-      __e: handleEvent,
-      __l: handleLink$1
+      __l: handleLink,
+      __e: handleEvent
     }
   };
 
-  return initComponent$1(componentOptions, vueOptions)
+  if (isPage$$1) {
+    return componentOptions
+  }
+  return [componentOptions, VueComponent]
+}
+
+function parseComponent (vueOptions) {
+  const componentOptions = parseBaseComponent(vueOptions, {
+    isPage: isPage$1,
+    initRelation: initRelation$1
+  });
+
+  const oldAttached = componentOptions.lifetimes.attached;
+
+  componentOptions.lifetimes.attached = function attached () {
+    oldAttached.call(this);
+    if (isPage$1.call(this)) { // 百度 onLoad 在 attached 之前触发
+      // 百度 当组件作为页面时 pageinstancce 不是原来组件的 instance
+      this.pageinstance.$vm = this.$vm;
+
+      if (hasOwn(this.pageinstance, '_$args')) {
+        this.$vm.$mp.query = this.pageinstance._$args;
+        this.$vm.__call_hook('onLoad', this.pageinstance._$args);
+        delete this.pageinstance._$args;
+      }
+      // TODO  目前版本 百度 Component 作为页面时，methods 中的 onShow 不触发
+      this.$vm.__call_hook('onShow');
+    }
+  };
+
+  componentOptions.messages = {
+    '__l': componentOptions.methods['__l']
+  };
+  delete componentOptions.methods['__l'];
+
+  return componentOptions
+}
+
+const hooks$1 = [
+  'onShow',
+  'onHide',
+  'onUnload'
+];
+
+hooks$1.push(...PAGE_EVENT_HOOKS);
+
+function parseBasePage (vuePageOptions, {
+  isPage,
+  initRelation
+}) {
+  const pageOptions = parseComponent(vuePageOptions, {
+    isPage,
+    initRelation
+  });
+
+  initHooks(pageOptions.methods, hooks$1, vuePageOptions);
+
+  pageOptions.methods.onLoad = function (args) {
+    this.$vm.$mp.query = args; // 兼容 mpvue
+    this.$vm.__call_hook('onLoad', args);
+  };
+
+  return pageOptions
+}
+
+function detached ($vm) {
+  $vm.$children.forEach(childVm => {
+    childVm.$scope.detached();
+  });
+  $vm.$scope.detached();
+}
+
+function onPageUnload ($vm) {
+  $vm.$destroy();
+  $vm.$children.forEach(childVm => {
+    detached(childVm);
+  });
+}
+
+function parsePage (vuePageOptions) {
+  const pageOptions = parseBasePage(vuePageOptions, {
+    isPage: isPage$1,
+    initRelation: initRelation$1
+  });
+
+  pageOptions.methods.onLoad = function onLoad (args) {
+    // 百度 onLoad 在 attached 之前触发，先存储 args, 在 attached 里边触发 onLoad
+    if (this.$vm) {
+      this.$vm.$mp.query = args;
+      this.$vm.__call_hook('onLoad', args);
+    } else {
+      this.pageinstance._$args = args;
+    }
+  };
+  // TODO  目前版本 百度 Component 作为页面时，methods 中的 onShow 不触发
+  delete pageOptions.methods.onShow;
+
+  pageOptions.methods.onUnload = function onUnload () {
+    this.$vm.__call_hook('onUnload');
+    onPageUnload(this.$vm);
+  };
+
+  return pageOptions
+}
+
+function createPage (vuePageOptions) {
+  {
+    return Component(parsePage(vuePageOptions))
+  }
+}
+
+function createComponent (vueOptions) {
+  {
+    return Component(parseComponent(vueOptions))
+  }
 }
 
 todos.forEach(todoApi => {
@@ -1192,7 +1363,8 @@ todos.forEach(todoApi => {
 });
 
 canIUses.forEach(canIUseApi => {
-  const apiName = protocols[canIUseApi] && protocols[canIUseApi].name ? protocols[canIUseApi].name : canIUseApi;
+  const apiName = protocols[canIUseApi] && protocols[canIUseApi].name ? protocols[canIUseApi].name
+    : canIUseApi;
   if (!swan.canIUse(apiName)) {
     protocols[canIUseApi] = false;
   }
@@ -1217,6 +1389,9 @@ if (typeof Proxy !== 'undefined') {
           return promisify(name, todoApis[name])
         }
       }
+      if (eventApi[name]) {
+        return eventApi[name]
+      }
       if (!hasOwn(swan, name) && !hasOwn(protocols, name)) {
         return
       }
@@ -1235,6 +1410,10 @@ if (typeof Proxy !== 'undefined') {
     });
   }
 
+  Object.keys(eventApi).forEach(name => {
+    uni[name] = eventApi[name];
+  });
+
   Object.keys(api).forEach(name => {
     uni[name] = promisify(name, api[name]);
   });
@@ -1245,6 +1424,10 @@ if (typeof Proxy !== 'undefined') {
     }
   });
 }
+
+swan.createApp = createApp;
+swan.createPage = createPage;
+swan.createComponent = createComponent;
 
 var uni$1 = uni;
 

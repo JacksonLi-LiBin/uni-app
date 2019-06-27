@@ -1,10 +1,26 @@
 function wrapper (webview) {
   webview.$processed = true
+
+  webview.postMessage = function (data) {
+    plus.webview.postMessageToUniNView({
+      type: 'UniAppSubNVue',
+      data
+    }, webview.id)
+  }
+  let callbacks = []
+  webview.onMessage = function (callback) {
+    callbacks.push(callback)
+  }
+  webview.$consumeMessage = function (e) {
+    callbacks.forEach(callback => callback(e))
+  }
+
   if (!webview.__uniapp_mask_id) {
     return
   }
   const maskColor = webview.__uniapp_mask
-  const maskWebview = plus.webview.getWebviewById(webview.__uniapp_mask_id)
+  let maskWebview = plus.webview.getWebviewById(webview.__uniapp_mask_id)
+  maskWebview = maskWebview.parent() || maskWebview// 再次检测父
   const oldShow = webview.show
   const oldHide = webview.hide
   const oldClose = webview.close
@@ -29,16 +45,15 @@ function wrapper (webview) {
   }
   webview.close = function (...args) {
     closeMask()
+    callbacks = []
     return oldClose.apply(webview, args)
   }
 }
 
-export const subNVue = {
-  getSubNVueById (id) {
-    const webview = plus.webview.getWebviewById(id)
-    if (webview && !webview.$processed) {
-      wrapper(webview)
-    }
-    return webview
+export function getSubNVueById (id) {
+  const webview = plus.webview.getWebviewById(id)
+  if (webview && !webview.$processed) {
+    wrapper(webview)
   }
+  return webview
 }

@@ -1,9 +1,5 @@
-import {
-  isFn
-} from 'uni-shared'
-
 function callHook (vm, hook, params) {
-  return isFn(vm.$options[hook]) && vm.$options[hook].apply(vm, params)
+  return vm.__call_hook(hook, params)
 }
 
 export function callAppHook (vm, hook, ...params) {
@@ -21,6 +17,12 @@ export function callPageHook (vm, hook, ...params) {
       UniServiceJSBridge.publishHandler('onPageLoad', vm, vm.$page.id)
     }
     if (hook === 'onShow') {
+      if (
+        vm.$route.meta.isTabBar &&
+                vm.$route.params.detail
+      ) {
+        UniServiceJSBridge.emit('onTabItemTap', vm.$route.params.detail)
+      }
       UniServiceJSBridge.publishHandler('onPageShow', vm, vm.$page.id)
     }
   }

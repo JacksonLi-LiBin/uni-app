@@ -31,12 +31,12 @@ function resolveColor (color) {
 }
 
 function processTouches (target, touches) {
-  return ([]).map.call(touches, (touche) => {
+  return ([]).map.call(touches, (touch) => {
     var boundingClientRect = target.getBoundingClientRect()
     return {
-      identifier: touche.identifier,
-      x: touche.clientX - boundingClientRect.x,
-      y: touche.clientY - boundingClientRect.y
+      identifier: touch.identifier,
+      x: touch.clientX - boundingClientRect.left,
+      y: touch.clientY - boundingClientRect.top
     }
   })
 }
@@ -279,24 +279,24 @@ export default {
           loadImage()
         }
         /**
-                     * 加载图像
-                     */
+         * 加载图像
+         */
         function loadImage () {
           sefl._images[src] = new Image()
           sefl._images[src].onload = function () {
             sefl._images[src].ready = true
           }
           /**
-                         * 从Blob加载
-                         * @param {Blob} blob
-                         */
+           * 从Blob加载
+           * @param {Blob} blob
+           */
           function loadBlob (blob) {
             sefl._images[src].src = (window.URL || window.webkitURL).createObjectURL(blob)
           }
           /**
-                         * 从本地文件加载
-                         * @param {string} path 文件路径
-                         */
+           * 从本地文件加载
+           * @param {string} path 文件路径
+           */
           function loadFile (path) {
             var bitmap = new plus.nativeObj.Bitmap('bitmap' + Date.now())
             bitmap.load(path, function () {
@@ -308,9 +308,9 @@ export default {
             })
           }
           /**
-                         * 从网络加载
-                         * @param {string} url 文件地址
-                         */
+           * 从网络加载
+           * @param {string} url 文件地址
+           */
           function loadUrl (url) {
             function plusDownload () {
               plus.downloader.createDownload(url, {

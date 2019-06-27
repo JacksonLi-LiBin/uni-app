@@ -7,6 +7,10 @@ const PLATFORMS = {
     prefix: 'wx',
     title: '微信小程序'
   },
+  'mp-qq': {
+    prefix: 'wx',
+    title: 'QQ小程序'
+  },
   'mp-alipay': {
     prefix: 'my',
     title: '支付宝小程序'
@@ -36,7 +40,8 @@ module.exports = {
   plugins: [
     alias({
       'uni-shared': path.resolve(__dirname, '../src/shared/util.js'),
-      'uni-platform': path.resolve(__dirname, '../src/platforms/' + process.env.UNI_PLATFORM)
+      'uni-platform': path.resolve(__dirname, '../src/platforms/' + process.env.UNI_PLATFORM),
+      'uni-wrapper': path.resolve(__dirname, '../src/core/runtime/wrapper')
     }),
     replace({
       __GLOBAL__: platform.prefix,

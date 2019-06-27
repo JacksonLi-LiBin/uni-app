@@ -14,14 +14,6 @@ const todos = [
   'startAccelerometer',
   'startCompass',
   'addPhoneContact',
-  'setTabBarItem',
-  'setTabBarStyle',
-  'hideTabBar',
-  'showTabBar',
-  'setTabBarBadge',
-  'removeTabBarBadge',
-  'showTabBarRedDot',
-  'hideTabBarRedDot',
   'setBackgroundColor',
   'setBackgroundTextStyle',
   'createIntersectionObserver',
@@ -46,7 +38,15 @@ const todos = [
 
 // 存在兼容性的 API 列表
 const canIUses = [
-  'startPullDownRefresh'
+  'startPullDownRefresh',
+  'setTabBarItem',
+  'setTabBarStyle',
+  'hideTabBar',
+  'showTabBar',
+  'setTabBarBadge',
+  'removeTabBarBadge',
+  'showTabBarRedDot',
+  'hideTabBarRedDot'
 ]
 
 function _handleNetworkInfo (result) {
@@ -74,7 +74,7 @@ function _handleSystemInfo (result) {
 }
 
 const protocols = { // 需要做转换的 API 列表
-  returnValue (methodName, res) { // 通用 returnValue 解析
+  returnValue (methodName, res = {}) { // 通用 returnValue 解析
     if (res.error || res.errorMessage) {
       res.errMsg = `${methodName}:fail ${res.errorMessage || res.error}`
       delete res.error
